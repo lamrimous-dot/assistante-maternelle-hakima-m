@@ -1,41 +1,50 @@
-// Remplace window.storage (fourni par Claude dans un artefact) par une version
-// qui utilise le localStorage du navigateur, pour que l'appli fonctionne seule,
-// hébergée sur son propre site.
-//
-// Limite : ce stockage reste propre à cet appareil et à ce navigateur (il n'est
-// pas synchronisé entre le téléphone et l'ordinateur). Utilisez le bouton
-// « Sauvegarde & export » dans l'appli pour faire des copies de sécurité.
+// Remplace le stockage local par Firebase Firestore, pour une vraie
+// synchronisation entre tous les appareils utilisant cette appli.
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs } from "firebase/firestore";
 
-function nsKey(key, shared) {
-  return `nid:${shared ? "shared" : "local"}:${key}`;
+const firebaseConfig = {
+  apiKey: "AIzaSyDlZJdoeS1FXDxt7wQGQK6H9PUuEAWfHao",
+  authDomain: "nid-hakima-e57d6.firebaseapp.com",
+  projectId: "nid-hakima-e57d6",
+  storageBucket: "nid-hakima-e57d6.firebasestorage.app",
+  messagingSenderId: "246703089322",
+  appId: "1:246703089322:web:bf66b546cef7255ac112d3",
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+function docId(key, shared) {
+  return key + (shared ? "__shared" : "");
 }
 
 window.storage = {
   async get(key, shared = false) {
-    const raw = localStorage.getItem(nsKey(key, shared));
-    if (raw === null) throw new Error("not found");
-    return { key, value: raw, shared };
+    const ref = doc(db, "nid", docId(key, shared));
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error("not found");
+    return { key, value: snap.data().value, shared };
   },
 
   async set(key, value, shared = false) {
-    localStorage.setItem(nsKey(key, shared), value);
+    const ref = doc(db, "nid", docId(key, shared));
+    await setDoc(ref, { value });
     return { key, value, shared };
   },
 
   async delete(key, shared = false) {
-    localStorage.removeItem(nsKey(key, shared));
+    const ref = doc(db, "nid", docId(key, shared));
+    await deleteDoc(ref);
     return { key, deleted: true, shared };
   },
 
   async list(prefix = "", shared = false) {
-    const fullPrefix = nsKey(prefix, shared);
+    const snap = await getDocs(collection(db, "nid"));
     const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(fullPrefix)) {
-        keys.push(k.slice(`nid:${shared ? "shared" : "local"}:`.length));
-      }
-    }
+    snap.forEach((d) => {
+      if (d.id.startsWith(prefix)) keys.push(d.id);
+    });
     return { keys, prefix, shared };
   },
 };
