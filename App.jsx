@@ -3,7 +3,7 @@ import {
   Feather, Home, LogOut, UtensilsCrossed, Moon, Palette as PaletteIcon,
   Baby, HeartPulse, Camera, Plus, X, Calendar, Users, ClipboardList,
   Clock, Trash2, ChevronLeft, ChevronRight, Check, Pencil, Phone, Mail,
-  ArrowLeft, CalendarDays, Printer, Save, Upload, ShieldCheck
+  ArrowLeft, CalendarDays, Printer, Save, Upload, ShieldCheck, Wallet, Settings
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -24,6 +24,26 @@ const colors = {
   danger: "#C4574A",
 };
 const CHILD_PALETTE = [colors.coral, colors.forest, colors.rose, colors.mustard, colors.sky];
+
+const DEFAULT_BAREMES = {
+  entretien: [
+    { max: 8, rate: 2.66 },
+    { max: 9, rate: 2.85 },
+    { max: 10, rate: 3.00 },
+    { max: 11, rate: 3.10 },
+    { max: 9999, rate: 3.45 },
+  ],
+  repas: 1.65,
+  petitDejeuner: 0.90,
+  gouter: 0.75,
+  congesPayesPercent: 10,
+  majorationHeuresSup: 0,
+};
+const MEAL_TYPES = [
+  { key: "petitDejeuner", label: "Petit-déj" },
+  { key: "repas", label: "Repas" },
+  { key: "gouter", label: "Goûter" },
+];
 
 const EVENT_TYPES = [
   { key: "arrivee", label: "Arrivée", icon: Home, color: colors.forest },
@@ -83,6 +103,13 @@ function fmtHM(mins) {
   const h = Math.floor(mins / 60), m = mins % 60;
   return `${h} h ${String(m).padStart(2, "0")} m`;
 }
+function fmtEuro(n) {
+  const v = Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+  return v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+}
+function fmtHeuresDec(h) {
+  return (Math.round(h * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 /* ------------------------------------------------------------------ */
 /* Root component                                                       */
@@ -108,8 +135,10 @@ export default function App() {
   const [menuDate, setMenuDate] = useState(todayISO());
   const [presenceMonth, setPresenceMonth] = useState(new Date().toISOString().slice(0, 7));
   const [presenceChildId, setPresenceChildId] = useState(null);
-  const [printMode, setPrintMode] = useState(null); // { type:'presence'|'journal', child, ... }
+  const [printMode, setPrintMode] = useState(null); // { type:'presence'|'journal'|'paie', child, ... }
   const [showBackup, setShowBackup] = useState(false);
+  const [baremes, setBaremes] = useState(DEFAULT_BAREMES);
+  const [showBaremes, setShowBaremes] = useState(false);
 
   /* ---------------- load ---------------- */
   useEffect(() => {
@@ -126,6 +155,10 @@ export default function App() {
         const m = await window.storage.get("menus", false);
         setMenus(m ? JSON.parse(m.value) : {});
       } catch { setMenus({}); }
+      try {
+        const b = await window.storage.get("baremes", false);
+        setBaremes(b ? { ...DEFAULT_BAREMES, ...JSON.parse(b.value) } : DEFAULT_BAREMES);
+      } catch { setBaremes(DEFAULT_BAREMES); }
       setReady(true);
     })();
   }, []);
@@ -141,6 +174,7 @@ export default function App() {
   const saveChildren = (next) => persist("children", next, setChildren);
   const saveEvents = (next) => persist("events", next, setEvents);
   const saveMenus = (next) => persist("menus", next, setMenus);
+  const saveBaremes = (next) => persist("baremes", next, setBaremes);
 
   /* ---------------- child CRUD ---------------- */
   function openNewChild() { setEditingChild(null); setShowChildForm(true); }
@@ -165,9 +199,11 @@ export default function App() {
   }
 
   /* ---------------- events ---------------- */
-  function logEvent(childId, type, ts, note) {
+  function logEvent(childId, type, ts, note, meals) {
     const list = events[childId] ? [...events[childId]] : [];
-    list.push({ id: uid(), type, ts, note: note || "" });
+    const entry = { id: uid(), type, ts, note: note || "" };
+    if (meals && meals.length) entry.meals = meals;
+    list.push(entry);
     list.sort((a, b) => new Date(a.ts) - new Date(b.ts));
     saveEvents({ ...events, [childId]: list });
   }
@@ -204,6 +240,59 @@ export default function App() {
       if (mins > 0) { totalMins += mins; days.push({ day, mins }); }
     });
     return { totalMins, days };
+  }
+
+  /* ---------------- paie calc ---------------- */
+  function computeMonthlyPaie(child, monthISO) {
+    const list = (events[child.id] || []).filter(e => e.ts.slice(0, 7) === monthISO);
+    const byDay = {};
+    list.forEach(e => {
+      const day = e.ts.slice(0, 10);
+      byDay[day] = byDay[day] || [];
+      byDay[day].push(e);
+    });
+    let totalMins = 0;
+    let entretienTotal = 0;
+    let daysWorked = 0;
+    let countRepas = 0, countPetitDej = 0, countGouter = 0;
+    Object.keys(byDay).sort().forEach(day => {
+      const dayEvents = byDay[day].sort((a, b) => new Date(a.ts) - new Date(b.ts));
+      const arrivals = dayEvents.filter(e => e.type === "arrivee");
+      const departs = dayEvents.filter(e => e.type === "depart");
+      let mins = 0;
+      const n = Math.min(arrivals.length, departs.length);
+      for (let i = 0; i < n; i++) mins += minutesBetween(arrivals[i].ts, departs[i].ts);
+      if (mins > 0) {
+        totalMins += mins;
+        daysWorked += 1;
+        const hours = mins / 60;
+        const sortedBrackets = [...baremes.entretien].sort((a, b) => a.max - b.max);
+        const bracket = sortedBrackets.find(b => hours <= b.max) || sortedBrackets[sortedBrackets.length - 1];
+        entretienTotal += bracket.rate;
+      }
+      dayEvents.forEach(e => {
+        if (e.type === "repas" && e.meals) {
+          if (e.meals.includes("repas")) countRepas++;
+          if (e.meals.includes("petitDejeuner")) countPetitDej++;
+          if (e.meals.includes("gouter")) countGouter++;
+        }
+      });
+    });
+    const totalHeures = totalMins / 60;
+    const baseHeuresMois = Number(child.baseHeuresMois) || 0;
+    const tauxHoraire = Number(child.tauxHoraire) || 0;
+    const heuresBase = baseHeuresMois > 0 ? Math.min(totalHeures, baseHeuresMois) : totalHeures;
+    const heuresSup = baseHeuresMois > 0 ? Math.max(0, totalHeures - baseHeuresMois) : 0;
+    const salaireBase = heuresBase * tauxHoraire;
+    const remunerationHeuresSup = heuresSup * tauxHoraire * (1 + (baremes.majorationHeuresSup || 0) / 100);
+    const congesPayes = (salaireBase + remunerationHeuresSup) * (baremes.congesPayesPercent || 0) / 100;
+    const indemniteRepas = countRepas * baremes.repas + countPetitDej * baremes.petitDejeuner + countGouter * baremes.gouter;
+    const totalNet = salaireBase + remunerationHeuresSup + congesPayes + entretienTotal + indemniteRepas;
+    return {
+      totalHeures, daysWorked, heuresBase, heuresSup, salaireBase, remunerationHeuresSup,
+      congesPayes, entretienTotal, indemniteRepas, totalNet, tauxHoraire, baseHeuresMois,
+      countRepas, countPetitDej, countGouter,
+    };
   }
 
   if (!ready) {
@@ -270,7 +359,9 @@ export default function App() {
             presenceChildId={presenceChildId || (children[0] && children[0].id)}
             setPresenceChildId={setPresenceChildId}
             monthlyPresence={monthlyPresence}
+            computeMonthlyPaie={computeMonthlyPaie}
             onExport={(payload) => setPrintMode(payload)}
+            onOpenBaremes={() => setShowBaremes(true)}
           />
         )}
       </main>
@@ -292,7 +383,7 @@ export default function App() {
         <LogEventModal
           eventType={EVENT_MAP[logModal]}
           onCancel={() => setLogModal(null)}
-          onConfirm={(ts, note) => { logEvent(activeChild.id, logModal, ts, note); setLogModal(null); }}
+          onConfirm={(ts, note, meals) => { logEvent(activeChild.id, logModal, ts, note, meals); setLogModal(null); }}
         />
       )}
 
@@ -311,6 +402,14 @@ export default function App() {
             if (data.menus) saveMenus(data.menus);
           }}
           onClose={() => setShowBackup(false)}
+        />
+      )}
+
+      {showBaremes && (
+        <BaremesModal
+          baremes={baremes}
+          onSave={(next) => { saveBaremes(next); setShowBaremes(false); }}
+          onCancel={() => setShowBaremes(false)}
         />
       )}
     </div>
@@ -510,12 +609,16 @@ function LogEventModal({ eventType, onCancel, onConfirm }) {
   const now = new Date();
   const [time, setTime] = useState(`${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`);
   const [note, setNote] = useState("");
+  const [meals, setMeals] = useState({ petitDejeuner: false, repas: eventType.key === "repas", gouter: false });
+
+  function toggleMeal(key) { setMeals(m => ({ ...m, [key]: !m[key] })); }
 
   function confirm() {
     const [h, m] = time.split(":").map(Number);
     const ts = new Date();
     ts.setHours(h, m, 0, 0);
-    onConfirm(ts.toISOString(), note.trim());
+    const mealsArr = eventType.key === "repas" ? Object.keys(meals).filter(k => meals[k]) : undefined;
+    onConfirm(ts.toISOString(), note.trim(), mealsArr);
   }
 
   return (
@@ -528,6 +631,21 @@ function LogEventModal({ eventType, onCancel, onConfirm }) {
         <Field label="Heure">
           <input type="time" value={time} onChange={e => setTime(e.target.value)} style={s.input} />
         </Field>
+        {eventType.key === "repas" && (
+          <Field label="Repas fournis (pour la paie)">
+            <div style={{ display: "flex", gap: 8 }}>
+              {MEAL_TYPES.map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => toggleMeal(key)}
+                  style={{ ...s.toggleBtn, ...(meals[key] ? { background: colors.forest, color: "#fff", borderColor: colors.forest } : {}) }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </Field>
+        )}
         <Field label="Note (facultatif)">
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Un petit mot pour les parents…" style={{ ...s.input, resize: "none", fontFamily: "Inter, sans-serif" }} />
         </Field>
@@ -552,6 +670,8 @@ function ChildForm({ initial, onCancel, onSave, onDelete }) {
   const [start, setStart] = useState(initial?.schedule?.start || "09:00");
   const [end, setEnd] = useState(initial?.schedule?.end || "17:00");
   const [parents, setParents] = useState(initial?.parents?.length ? initial.parents : [{ name: "", phone: "", email: "" }]);
+  const [tauxHoraire, setTauxHoraire] = useState(initial?.tauxHoraire ?? "");
+  const [baseHeuresMois, setBaseHeuresMois] = useState(initial?.baseHeuresMois ?? "");
 
   function toggleDay(i) {
     setDays(days.includes(i) ? days.filter(d => d !== i) : [...days, i].sort());
@@ -572,6 +692,8 @@ function ChildForm({ initial, onCancel, onSave, onDelete }) {
       birthDate,
       schedule: { days, start, end },
       parents: parents.filter(p => p.name.trim() || p.phone.trim() || p.email.trim()),
+      tauxHoraire: parseFloat(tauxHoraire) || 0,
+      baseHeuresMois: parseFloat(baseHeuresMois) || 0,
     });
   }
 
@@ -618,6 +740,23 @@ function ChildForm({ initial, onCancel, onSave, onDelete }) {
           </div>
         </Field>
 
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink, margin: "18px 0 8px" }}>Rémunération</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <Field label="Taux horaire net (€)">
+              <input type="number" step="0.01" min="0" value={tauxHoraire} onChange={e => setTauxHoraire(e.target.value)} style={s.input} placeholder="3,10" />
+            </Field>
+          </div>
+          <div style={{ flex: 1 }}>
+            <Field label="Base heures/mois">
+              <input type="number" step="0.5" min="0" value={baseHeuresMois} onChange={e => setBaseHeuresMois(e.target.value)} style={s.input} placeholder="75" />
+            </Field>
+          </div>
+        </div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: colors.inkSoft, marginTop: -8, marginBottom: 4 }}>
+          Utilisés pour calculer le bulletin de paie automatiquement (onglet Présences).
+        </div>
+
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 8px" }}>
           <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink }}>Parents</div>
           <button onClick={addParent} style={s.smallGhostBtn}><Plus size={14} /> Ajouter</button>
@@ -644,6 +783,74 @@ function ChildForm({ initial, onCancel, onSave, onDelete }) {
 
         <button onClick={submit} style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 14 }}>
           <Check size={16} /> {initial ? "Enregistrer" : "Ajouter"}
+        </button>
+      </div>
+    </Overlay>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Barèmes de paie (réglages globaux)                                   */
+/* ------------------------------------------------------------------ */
+function BaremesModal({ baremes, onSave, onCancel }) {
+  const [entretien, setEntretien] = useState(baremes.entretien.map(b => ({ ...b })));
+  const [repas, setRepas] = useState(baremes.repas);
+  const [petitDejeuner, setPetitDejeuner] = useState(baremes.petitDejeuner);
+  const [gouter, setGouter] = useState(baremes.gouter);
+  const [congesPayesPercent, setCongesPayesPercent] = useState(baremes.congesPayesPercent);
+  const [majorationHeuresSup, setMajorationHeuresSup] = useState(baremes.majorationHeuresSup);
+
+  const bracketLabels = ["Moins de 8h", "8h - 9h", "9h - 10h", "10h - 11h", "Plus de 11h"];
+
+  function updateBracket(i, value) {
+    setEntretien(entretien.map((b, idx) => idx === i ? { ...b, rate: parseFloat(value) || 0 } : b));
+  }
+
+  function submit() {
+    onSave({
+      entretien,
+      repas: parseFloat(repas) || 0,
+      petitDejeuner: parseFloat(petitDejeuner) || 0,
+      gouter: parseFloat(gouter) || 0,
+      congesPayesPercent: parseFloat(congesPayesPercent) || 0,
+      majorationHeuresSup: parseFloat(majorationHeuresSup) || 0,
+    });
+  }
+
+  return (
+    <Overlay onClose={onCancel} full>
+      <div style={s.fullSheet}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 20, color: colors.ink }}>Réglages de paie</div>
+          <button onClick={onCancel} style={s.iconBtnLight}><X size={18} color={colors.ink} /></button>
+        </div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: colors.inkSoft, marginBottom: 16, lineHeight: 1.6 }}>
+          Ces montants sont les mêmes pour tous les enfants. Vérifiez qu'ils correspondent à la convention collective en vigueur — ce sont des valeurs par défaut, à ajuster si besoin.
+        </div>
+
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: colors.forestDeep, marginBottom: 8 }}>Indemnité d'entretien / jour</div>
+        {entretien.map((b, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span style={{ flex: 1, fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.ink }}>{bracketLabels[i] || `Tranche ${i + 1}`}</span>
+            <input type="number" step="0.01" min="0" value={b.rate} onChange={e => updateBracket(i, e.target.value)} style={{ ...s.input, width: 90 }} />
+          </div>
+        ))}
+
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: colors.forestDeep, margin: "18px 0 8px" }}>Indemnités de repas</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><Field label="Petit-déj (€)"><input type="number" step="0.01" min="0" value={petitDejeuner} onChange={e => setPetitDejeuner(e.target.value)} style={s.input} /></Field></div>
+          <div style={{ flex: 1 }}><Field label="Repas (€)"><input type="number" step="0.01" min="0" value={repas} onChange={e => setRepas(e.target.value)} style={s.input} /></Field></div>
+          <div style={{ flex: 1 }}><Field label="Goûter (€)"><input type="number" step="0.01" min="0" value={gouter} onChange={e => setGouter(e.target.value)} style={s.input} /></Field></div>
+        </div>
+
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: colors.forestDeep, margin: "18px 0 8px" }}>Autres</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ flex: 1 }}><Field label="Congés payés (%)"><input type="number" step="0.1" min="0" value={congesPayesPercent} onChange={e => setCongesPayesPercent(e.target.value)} style={s.input} /></Field></div>
+          <div style={{ flex: 1 }}><Field label="Majoration heures sup. (%)"><input type="number" step="1" min="0" value={majorationHeuresSup} onChange={e => setMajorationHeuresSup(e.target.value)} style={s.input} /></Field></div>
+        </div>
+
+        <button onClick={submit} style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 14 }}>
+          <Check size={16} /> Enregistrer les réglages
         </button>
       </div>
     </Overlay>
@@ -750,7 +957,7 @@ function Menus({ menus, menuDate, setMenuDate, onSave }) {
 /* ------------------------------------------------------------------ */
 /* Presence                                                             */
 /* ------------------------------------------------------------------ */
-function Presence({ children, presenceMonth, setPresenceMonth, presenceChildId, setPresenceChildId, monthlyPresence, onExport }) {
+function Presence({ children, presenceMonth, setPresenceMonth, presenceChildId, setPresenceChildId, monthlyPresence, computeMonthlyPaie, onExport, onOpenBaremes }) {
   const child = children.find(c => c.id === presenceChildId);
   const shiftMonth = (n) => {
     const [y, m] = presenceMonth.split("-").map(Number);
@@ -767,6 +974,7 @@ function Presence({ children, presenceMonth, setPresenceMonth, presenceChildId, 
   }
 
   const { totalMins, days } = child ? monthlyPresence(child.id, presenceMonth) : { totalMins: 0, days: [] };
+  const paie = child ? computeMonthlyPaie(child, presenceMonth) : null;
 
   return (
     <div style={{ padding: 16 }}>
@@ -781,7 +989,10 @@ function Presence({ children, presenceMonth, setPresenceMonth, presenceChildId, 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
         <button onClick={() => shiftMonth(-1)} style={s.iconBtnLight}><ChevronLeft size={16} color={colors.forest} /></button>
         <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink, textTransform: "capitalize" }}>{monthLabel()}</div>
-        <button onClick={() => shiftMonth(1)} style={s.iconBtnLight}><ChevronRight size={16} color={colors.forest} /></button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => shiftMonth(1)} style={s.iconBtnLight}><ChevronRight size={16} color={colors.forest} /></button>
+          <button onClick={onOpenBaremes} style={s.iconBtnLight} aria-label="Réglages de paie"><Settings size={16} color={colors.forest} /></button>
+        </div>
       </div>
 
       <div style={s.presenceSummary}>
@@ -814,6 +1025,51 @@ function Presence({ children, presenceMonth, setPresenceMonth, presenceChildId, 
       <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: colors.inkSoft, marginTop: 14 }}>
         Calculé à partir des pointages Arrivée / Départ enregistrés dans le journal de l'enfant.
       </div>
+
+      {child && paie && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "24px 0 10px" }}>
+            <Wallet size={17} color={colors.forest} />
+            <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink }}>Bulletin de paie</div>
+          </div>
+
+          {(!paie.tauxHoraire) ? (
+            <div style={s.emptyState}>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.inkSoft }}>
+                Renseignez le taux horaire de {child.firstName} dans sa fiche pour calculer la paie.
+              </div>
+            </div>
+          ) : (
+            <div style={s.paieCard}>
+              <div style={s.paieRow}><span>Heures réalisées</span><strong>{fmtHeuresDec(paie.totalHeures)} h</strong></div>
+              {paie.baseHeuresMois > 0 && (
+                <div style={s.paieRow}><span>dont heures supplémentaires</span><strong>{fmtHeuresDec(paie.heuresSup)} h</strong></div>
+              )}
+              <div style={s.paieRow}><span>Jours travaillés</span><strong>{paie.daysWorked}</strong></div>
+              <div style={s.paieDivider} />
+              <div style={s.paieRow}><span>Salaire de base</span><strong>{fmtEuro(paie.salaireBase)}</strong></div>
+              {paie.heuresSup > 0 && (
+                <div style={s.paieRow}><span>Rémunération heures sup.</span><strong>{fmtEuro(paie.remunerationHeuresSup)}</strong></div>
+              )}
+              <div style={s.paieRow}><span>Indemnités de congés payés</span><strong>{fmtEuro(paie.congesPayes)}</strong></div>
+              <div style={s.paieRow}><span>Indemnités d'entretien</span><strong>{fmtEuro(paie.entretienTotal)}</strong></div>
+              <div style={s.paieRow}><span>Indemnités de repas</span><strong>{fmtEuro(paie.indemniteRepas)}</strong></div>
+              <div style={s.paieDivider} />
+              <div style={{ ...s.paieRow, fontSize: 16 }}>
+                <span style={{ fontFamily: "Fredoka, sans-serif", color: colors.ink }}>Total net à verser</span>
+                <strong style={{ color: colors.forest, fontFamily: "Fredoka, sans-serif" }}>{fmtEuro(paie.totalNet)}</strong>
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={() => onExport({ type: "paie", child, monthLabel: monthLabel(), paie })}
+            style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 12 }}
+          >
+            <Printer size={16} /> Exporter le bulletin en PDF
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -910,6 +1166,38 @@ function PrintOverlay({ data, onClose }) {
               </tbody>
             </table>
           </>
+        ) : data.type === "paie" ? (
+          <>
+            <h1 style={s.reportTitle}>Bulletin de paie</h1>
+            <div style={s.reportMeta}>
+              <div><strong>Enfant :</strong> {data.child.firstName} {data.child.lastName}</div>
+              <div><strong>Période :</strong> <span style={{ textTransform: "capitalize" }}>{data.monthLabel}</span></div>
+              <div><strong>Taux horaire net :</strong> {fmtEuro(data.paie.tauxHoraire)}</div>
+            </div>
+            <table style={s.reportTable}>
+              <tbody>
+                <tr><td style={s.td}>Heures réalisées</td><td style={{ ...s.td, textAlign: "right" }}>{fmtHeuresDec(data.paie.totalHeures)} h</td></tr>
+                {data.paie.baseHeuresMois > 0 && (
+                  <tr><td style={s.td}>dont heures supplémentaires</td><td style={{ ...s.td, textAlign: "right" }}>{fmtHeuresDec(data.paie.heuresSup)} h</td></tr>
+                )}
+                <tr><td style={s.td}>Jours travaillés</td><td style={{ ...s.td, textAlign: "right" }}>{data.paie.daysWorked}</td></tr>
+                <tr><td style={s.td}>Salaire de base</td><td style={{ ...s.td, textAlign: "right" }}>{fmtEuro(data.paie.salaireBase)}</td></tr>
+                {data.paie.heuresSup > 0 && (
+                  <tr><td style={s.td}>Rémunération heures supplémentaires</td><td style={{ ...s.td, textAlign: "right" }}>{fmtEuro(data.paie.remunerationHeuresSup)}</td></tr>
+                )}
+                <tr><td style={s.td}>Indemnités de congés payés</td><td style={{ ...s.td, textAlign: "right" }}>{fmtEuro(data.paie.congesPayes)}</td></tr>
+                <tr><td style={s.td}>Indemnités d'entretien</td><td style={{ ...s.td, textAlign: "right" }}>{fmtEuro(data.paie.entretienTotal)}</td></tr>
+                <tr><td style={s.td}>Indemnités de repas</td><td style={{ ...s.td, textAlign: "right" }}>{fmtEuro(data.paie.indemniteRepas)}</td></tr>
+                <tr>
+                  <td style={{ ...s.td, fontFamily: "Fredoka, sans-serif", fontSize: 15, borderTop: `2px solid ${colors.forest}` }}>Total net à verser</td>
+                  <td style={{ ...s.td, textAlign: "right", fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.forest, borderTop: `2px solid ${colors.forest}` }}>{fmtEuro(data.paie.totalNet)}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style={{ fontSize: 11, color: colors.inkSoft, marginTop: 14 }}>
+              Calculé automatiquement à partir des pointages et des repas enregistrés. À vérifier avant tout versement.
+            </div>
+          </>
         ) : (
           <>
             <h1 style={s.reportTitle}>Journal de la journée</h1>
@@ -967,11 +1255,12 @@ function BackupModal({ children, events, menus, onRestore, onClose }) {
   const [restoreOk, setRestoreOk] = useState(false);
 
   function exportChildrenCSV() {
-    const headers = ["Prénom", "Nom", "Sexe", "Date de naissance", "Jours d'accueil", "Début", "Fin", "Parents"];
+    const headers = ["Prénom", "Nom", "Sexe", "Date de naissance", "Jours d'accueil", "Début", "Fin", "Taux horaire (€)", "Base heures/mois", "Parents"];
     const rows = children.map(c => [
       c.firstName, c.lastName, c.gender === "F" ? "Fille" : "Garçon", c.birthDate || "",
       (c.schedule?.days || []).map(i => DAY_LABELS_FULL[i]).join(" / "),
       c.schedule?.start || "", c.schedule?.end || "",
+      c.tauxHoraire || "", c.baseHeuresMois || "",
       (c.parents || []).map(p => `${p.name} ${p.phone} ${p.email}`.trim()).join(" | "),
     ]);
     downloadText(`nid-enfants-${todayISO()}.csv`, toCSV(headers, rows), "text/csv;charset=utf-8");
@@ -1129,4 +1418,7 @@ const s = {
   td: { fontSize: 13, padding: "9px 6px", borderBottom: `1px solid ${colors.line}` },
   reportFooter: { marginTop: 28, fontSize: 11, color: colors.inkSoft, textAlign: "center" },
   backupRow: { display: "flex", alignItems: "center", gap: 10, background: colors.bg, border: `1px solid ${colors.line}`, borderRadius: 10, padding: "10px 12px", fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.ink, cursor: "pointer", textAlign: "left" },
+  paieCard: { background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 16, padding: 16 },
+  paieRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.ink },
+  paieDivider: { height: 1, background: colors.line, margin: "6px 0" },
 };
