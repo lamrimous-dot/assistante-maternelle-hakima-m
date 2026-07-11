@@ -1,0 +1,9 @@
+{
+  "name": "Nid — carnet de bord",
+  "short_name": "Nid",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FBF7F0",
+  "theme_color": "#2F6B5E",
+  "icons": []
+}
