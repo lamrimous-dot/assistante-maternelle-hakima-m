@@ -28,6 +28,8 @@ const colors = {
 };
 const CHILD_PALETTE = [colors.rose, colors.sky, colors.mustard, colors.coral, colors.forest];
 
+const DEFAULT_SHEETS_WEBHOOK = "https://script.google.com/macros/s/AKfycbzf1I4ERuz_BHMQ3A6Y52WoQ0QrYahlXyE3M7qZI0FFaQhXMEAuO7yey5kV6wK3R2IE/exec";
+
 const DEFAULT_BAREMES = {
   entretien: [
     { max: 8, rate: 2.66 },
@@ -161,7 +163,7 @@ export default function App() {
   const [baremes, setBaremes] = useState(DEFAULT_BAREMES);
   const [showBaremes, setShowBaremes] = useState(false);
   const [timesheet, setTimesheet] = useState({}); // { childId: { dateISO: {ma,md,aa,ad,repas,petitDejeuner,gouter,absence} } }
-  const [sheetsWebhook, setSheetsWebhook] = useState("");
+  const [sheetsWebhook, setSheetsWebhook] = useState(DEFAULT_SHEETS_WEBHOOK);
   const [sheetsStatus, setSheetsStatus] = useState(null); // null | 'sending' | 'ok' | 'error'
   const [dayEditor, setDayEditor] = useState(null); // { childId, dateISO } | null
 
@@ -190,7 +192,7 @@ export default function App() {
       } catch { setTimesheet({}); }
       try {
         const w = await window.storage.get("sheetsWebhook", false);
-        setSheetsWebhook(w ? JSON.parse(w.value) : "");
+        setSheetsWebhook(w ? JSON.parse(w.value) : DEFAULT_SHEETS_WEBHOOK);
       } catch { setSheetsWebhook(""); }
       setReady(true);
     })();
@@ -379,6 +381,7 @@ export default function App() {
         }
         storageOk={storageOk}
         onOpenBackup={() => setShowBackup(true)}
+        onOpenBaremes={() => setShowBaremes(true)}
       />
 
       <main style={s.main}>
@@ -510,7 +513,7 @@ export default function App() {
 /* ------------------------------------------------------------------ */
 /* Header + bottom nav                                                  */
 /* ------------------------------------------------------------------ */
-function Header({ title, onBack, storageOk, onOpenBackup }) {
+function Header({ title, onBack, storageOk, onOpenBackup, onOpenBaremes }) {
   return (
     <header style={s.header}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -532,6 +535,9 @@ function Header({ title, onBack, storageOk, onOpenBackup }) {
             Sauvegarde indisponible
           </div>
         )}
+        <button onClick={onOpenBaremes} style={s.iconBtnGhost} aria-label="Réglages">
+          <Settings size={18} color="#fff" />
+        </button>
         <button onClick={onOpenBackup} style={s.iconBtnGhost} aria-label="Sauvegarde et export">
           <Save size={18} color="#fff" />
         </button>
