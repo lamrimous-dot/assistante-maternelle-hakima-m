@@ -3,27 +3,30 @@ import {
   Feather, Home, LogOut, UtensilsCrossed, Moon, Palette as PaletteIcon,
   Baby, HeartPulse, Camera, Plus, X, Calendar, Users, ClipboardList,
   Clock, Trash2, ChevronLeft, ChevronRight, Check, Pencil, Phone, Mail,
-  ArrowLeft, CalendarDays, Printer, Save, Upload, ShieldCheck, Wallet, Settings
+  ArrowLeft, CalendarDays, Printer, Save, Upload, ShieldCheck, Wallet, Settings, Table2, Send,
+  Receipt, LogIn, MoreVertical
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
 /* Design tokens                                                       */
 /* ------------------------------------------------------------------ */
 const colors = {
-  bg: "#FBF7F0",
+  bg: "#F7EFE6",
   card: "#FFFFFF",
-  ink: "#2B2A28",
-  inkSoft: "#918A7E",
-  line: "#EFE6D8",
-  forest: "#2F6B5E",
-  forestDeep: "#1F4A40",
-  coral: "#E2734A",
-  mustard: "#DFA23A",
-  rose: "#D97E93",
-  sky: "#4E8B8A",
-  danger: "#C4574A",
+  ink: "#2E2A26",
+  inkSoft: "#9C9086",
+  line: "#EFE2D2",
+  forest: "#2F5D50",
+  forestDeep: "#1E4038",
+  coral: "#E8A08A",
+  mustard: "#E3B54F",
+  rose: "#F0A8B4",
+  sky: "#8FB8B0",
+  danger: "#D4685C",
+  blush: "#FBEAE3",
+  navy: "#2C4A6E",
 };
-const CHILD_PALETTE = [colors.coral, colors.forest, colors.rose, colors.mustard, colors.sky];
+const CHILD_PALETTE = [colors.rose, colors.sky, colors.mustard, colors.coral, colors.forest];
 
 const DEFAULT_BAREMES = {
   entretien: [
@@ -46,14 +49,12 @@ const MEAL_TYPES = [
 ];
 
 const EVENT_TYPES = [
-  { key: "arrivee", label: "Arrivée", icon: Home, color: colors.forest },
   { key: "repas", label: "Repas", icon: UtensilsCrossed, color: colors.coral },
   { key: "sieste", label: "Sieste", icon: Moon, color: colors.sky },
   { key: "activite", label: "Activité", icon: PaletteIcon, color: colors.mustard },
   { key: "change", label: "Change", icon: Baby, color: colors.rose },
   { key: "soins", label: "Soins", icon: HeartPulse, color: colors.danger },
   { key: "photo", label: "Note / Photo", icon: Camera, color: colors.forestDeep },
-  { key: "depart", label: "Départ", icon: LogOut, color: colors.inkSoft },
 ];
 const EVENT_MAP = Object.fromEntries(EVENT_TYPES.map(e => [e.key, e]));
 
@@ -110,6 +111,25 @@ function fmtEuro(n) {
 function fmtHeuresDec(h) {
   return (Math.round(h * 100) / 100).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+function timeToMinutes(t) {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+function daySpanMinutes(start, end) {
+  const a = timeToMinutes(start), b = timeToMinutes(end);
+  if (a == null || b == null) return 0;
+  return Math.max(0, b - a);
+}
+function daysInMonth(monthISO) {
+  const [y, m] = monthISO.split("-").map(Number);
+  const count = new Date(y, m, 0).getDate();
+  const days = [];
+  for (let d = 1; d <= count; d++) {
+    days.push(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
+  }
+  return days;
+}
 
 /* ------------------------------------------------------------------ */
 /* Root component                                                       */
@@ -121,10 +141,11 @@ export default function App() {
   const [events, setEvents] = useState({});   // { childId: [ {id,type,ts,note} ] }
   const [menus, setMenus] = useState({});     // { dateISO: {entree,plat,dessert,gouter} }
 
-  const [tab, setTab] = useState("enfants");  // enfants | planning | menus | presences
-  const [view, setView] = useState("list");   // list | detail
+  const [tab, setTab] = useState("accueil");  // accueil | enfants | calendrier | rapports
+  const [view, setView] = useState("list");   // list | detail | rapport
   const [activeChildId, setActiveChildId] = useState(null);
   const [childSubTab, setChildSubTab] = useState("events"); // events | timeline
+  const [rapportChildId, setRapportChildId] = useState(null);
 
   const [showChildForm, setShowChildForm] = useState(false);
   const [editingChild, setEditingChild] = useState(null);
@@ -139,6 +160,10 @@ export default function App() {
   const [showBackup, setShowBackup] = useState(false);
   const [baremes, setBaremes] = useState(DEFAULT_BAREMES);
   const [showBaremes, setShowBaremes] = useState(false);
+  const [timesheet, setTimesheet] = useState({}); // { childId: { dateISO: {ma,md,aa,ad,repas,petitDejeuner,gouter,absence} } }
+  const [sheetsWebhook, setSheetsWebhook] = useState("");
+  const [sheetsStatus, setSheetsStatus] = useState(null); // null | 'sending' | 'ok' | 'error'
+  const [dayEditor, setDayEditor] = useState(null); // { childId, dateISO } | null
 
   /* ---------------- load ---------------- */
   useEffect(() => {
@@ -159,6 +184,14 @@ export default function App() {
         const b = await window.storage.get("baremes", false);
         setBaremes(b ? { ...DEFAULT_BAREMES, ...JSON.parse(b.value) } : DEFAULT_BAREMES);
       } catch { setBaremes(DEFAULT_BAREMES); }
+      try {
+        const t = await window.storage.get("timesheet", false);
+        setTimesheet(t ? JSON.parse(t.value) : {});
+      } catch { setTimesheet({}); }
+      try {
+        const w = await window.storage.get("sheetsWebhook", false);
+        setSheetsWebhook(w ? JSON.parse(w.value) : "");
+      } catch { setSheetsWebhook(""); }
       setReady(true);
     })();
   }, []);
@@ -175,6 +208,8 @@ export default function App() {
   const saveEvents = (next) => persist("events", next, setEvents);
   const saveMenus = (next) => persist("menus", next, setMenus);
   const saveBaremes = (next) => persist("baremes", next, setBaremes);
+  const saveTimesheet = (next) => persist("timesheet", next, setTimesheet);
+  const saveSheetsWebhook = (next) => persist("sheetsWebhook", next, setSheetsWebhook);
 
   /* ---------------- child CRUD ---------------- */
   function openNewChild() { setEditingChild(null); setShowChildForm(true); }
@@ -212,6 +247,41 @@ export default function App() {
     saveEvents({ ...events, [childId]: list });
   }
 
+  /* ---------------- Google Sheets sync ---------------- */
+  async function pushMonthToSheets(child, monthISO) {
+    if (!sheetsWebhook) return;
+    setSheetsStatus("sending");
+    const childSheet = timesheet[child.id] || {};
+    const rows = daysInMonth(monthISO).map(day => {
+      const rec = childSheet[day] || {};
+      return {
+        enfant: `${child.firstName} ${child.lastName}`.trim(),
+        date: day,
+        matinArrivee: rec.ma || "",
+        matinDepart: rec.md || "",
+        apremArrivee: rec.aa || "",
+        apremDepart: rec.ad || "",
+        heures: Math.round((dayMinutes(rec) / 60) * 100) / 100,
+        repas: !!rec.repas,
+        petitDejeuner: !!rec.petitDejeuner,
+        gouter: !!rec.gouter,
+        absence: rec.absence || "",
+      };
+    });
+    try {
+      await fetch(sheetsWebhook, {
+        method: "POST",
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ rows }),
+      });
+      setSheetsStatus("ok");
+    } catch {
+      setSheetsStatus("error");
+    }
+    setTimeout(() => setSheetsStatus(null), 4000);
+  }
+
   const activeChild = children.find(c => c.id === activeChildId) || null;
 
   /* ---------------- derived: today's events per child/date ---------------- */
@@ -219,49 +289,40 @@ export default function App() {
     return (events[childId] || []).filter(e => e.ts.slice(0, 10) === dateISO);
   }
 
-  /* ---------------- presence calc ---------------- */
+  function updateTimesheetDay(childId, dateISO, patch) {
+    const childSheet = { ...(timesheet[childId] || {}) };
+    const current = childSheet[dateISO] || { ma: "", md: "", aa: "", ad: "", repas: false, petitDejeuner: false, gouter: false, absence: "" };
+    childSheet[dateISO] = { ...current, ...patch };
+    saveTimesheet({ ...timesheet, [childId]: childSheet });
+  }
+
+  function dayMinutes(rec) {
+    if (!rec) return 0;
+    return daySpanMinutes(rec.ma, rec.md) + daySpanMinutes(rec.aa, rec.ad);
+  }
+
+  /* ---------------- presence calc (from grid) ---------------- */
   function monthlyPresence(childId, monthISO) {
-    const list = (events[childId] || []).filter(e => e.ts.slice(0, 7) === monthISO);
-    const byDay = {};
-    list.forEach(e => {
-      const day = e.ts.slice(0, 10);
-      byDay[day] = byDay[day] || [];
-      byDay[day].push(e);
-    });
+    const childSheet = timesheet[childId] || {};
     let totalMins = 0;
     const days = [];
-    Object.keys(byDay).sort().forEach(day => {
-      const dayEvents = byDay[day].sort((a, b) => new Date(a.ts) - new Date(b.ts));
-      const arrivals = dayEvents.filter(e => e.type === "arrivee");
-      const departs = dayEvents.filter(e => e.type === "depart");
-      let mins = 0;
-      const n = Math.min(arrivals.length, departs.length);
-      for (let i = 0; i < n; i++) mins += minutesBetween(arrivals[i].ts, departs[i].ts);
+    Object.keys(childSheet).filter(d => d.startsWith(monthISO)).sort().forEach(day => {
+      const mins = dayMinutes(childSheet[day]);
       if (mins > 0) { totalMins += mins; days.push({ day, mins }); }
     });
     return { totalMins, days };
   }
 
-  /* ---------------- paie calc ---------------- */
+  /* ---------------- paie calc (from grid) ---------------- */
   function computeMonthlyPaie(child, monthISO) {
-    const list = (events[child.id] || []).filter(e => e.ts.slice(0, 7) === monthISO);
-    const byDay = {};
-    list.forEach(e => {
-      const day = e.ts.slice(0, 10);
-      byDay[day] = byDay[day] || [];
-      byDay[day].push(e);
-    });
+    const childSheet = timesheet[child.id] || {};
     let totalMins = 0;
     let entretienTotal = 0;
     let daysWorked = 0;
     let countRepas = 0, countPetitDej = 0, countGouter = 0;
-    Object.keys(byDay).sort().forEach(day => {
-      const dayEvents = byDay[day].sort((a, b) => new Date(a.ts) - new Date(b.ts));
-      const arrivals = dayEvents.filter(e => e.type === "arrivee");
-      const departs = dayEvents.filter(e => e.type === "depart");
-      let mins = 0;
-      const n = Math.min(arrivals.length, departs.length);
-      for (let i = 0; i < n; i++) mins += minutesBetween(arrivals[i].ts, departs[i].ts);
+    Object.keys(childSheet).filter(d => d.startsWith(monthISO)).sort().forEach(day => {
+      const rec = childSheet[day];
+      const mins = dayMinutes(rec);
       if (mins > 0) {
         totalMins += mins;
         daysWorked += 1;
@@ -270,13 +331,9 @@ export default function App() {
         const bracket = sortedBrackets.find(b => hours <= b.max) || sortedBrackets[sortedBrackets.length - 1];
         entretienTotal += bracket.rate;
       }
-      dayEvents.forEach(e => {
-        if (e.type === "repas" && e.meals) {
-          if (e.meals.includes("repas")) countRepas++;
-          if (e.meals.includes("petitDejeuner")) countPetitDej++;
-          if (e.meals.includes("gouter")) countGouter++;
-        }
-      });
+      if (rec.repas) countRepas++;
+      if (rec.petitDejeuner) countPetitDej++;
+      if (rec.gouter) countGouter++;
     });
     const totalHeures = totalMins / 60;
     const baseHeuresMois = Number(child.baseHeuresMois) || 0;
@@ -311,9 +368,15 @@ export default function App() {
         title={
           view === "detail" && activeChild
             ? `${activeChild.firstName}`
-            : { enfants: "Mes enfants", planning: "Planning", menus: "Mes menus", presences: "Présences" }[tab]
+            : view === "rapport" && rapportChildId
+            ? "Facture"
+            : { accueil: "Nid", enfants: "Mes enfants", calendrier: "Calendrier", rapports: "Rapports" }[tab]
         }
-        onBack={view === "detail" ? () => { setView("list"); setActiveChildId(null); } : null}
+        onBack={
+          view === "detail" ? () => { setView("list"); setActiveChildId(null); }
+          : view === "rapport" ? () => { setView("list"); setRapportChildId(null); }
+          : null
+        }
         storageOk={storageOk}
         onOpenBackup={() => setShowBackup(true)}
       />
@@ -331,6 +394,31 @@ export default function App() {
             onDeleteEvent={(eid) => deleteEvent(activeChild.id, eid)}
             onEdit={() => openEditChild(activeChild)}
             onExportDay={(dayEvents) => setPrintMode({ type: "journal", child: activeChild, date: journalDate, events: dayEvents })}
+            timesheet={timesheet}
+            onUpdateDay={updateTimesheetDay}
+            dayMinutes={dayMinutes}
+            onEditDay={(dateISO) => setDayEditor({ childId: activeChild.id, dateISO })}
+          />
+        ) : view === "rapport" && rapportChildId ? (
+          <Facture
+            child={children.find(c => c.id === rapportChildId)}
+            monthISO={presenceMonth}
+            setMonthISO={setPresenceMonth}
+            timesheet={timesheet}
+            dayMinutes={dayMinutes}
+            baremes={baremes}
+            computeMonthlyPaie={computeMonthlyPaie}
+            onExport={(payload) => setPrintMode(payload)}
+            onOpenBaremes={() => setShowBaremes(true)}
+          />
+        ) : tab === "accueil" ? (
+          <Dashboard
+            children={children}
+            timesheet={timesheet}
+            onUpdateDay={updateTimesheetDay}
+            dayMinutes={dayMinutes}
+            onOpenChild={(id) => { setActiveChildId(id); setView("detail"); setChildSubTab("events"); setJournalDate(todayISO()); }}
+            onAdd={openNewChild}
           />
         ) : tab === "enfants" ? (
           <ChildrenList
@@ -338,35 +426,26 @@ export default function App() {
             onOpen={(id) => { setActiveChildId(id); setView("detail"); setChildSubTab("events"); setJournalDate(todayISO()); }}
             onAdd={openNewChild}
           />
-        ) : tab === "planning" ? (
-          <Planning
+        ) : tab === "calendrier" ? (
+          <CalendarView
             children={children}
-            weekStart={weekStart}
-            setWeekStart={setWeekStart}
-          />
-        ) : tab === "menus" ? (
-          <Menus
-            menus={menus}
-            menuDate={menuDate}
-            setMenuDate={setMenuDate}
-            onSave={(dateISO, data) => saveMenus({ ...menus, [dateISO]: data })}
+            timesheet={timesheet}
+            dayMinutes={dayMinutes}
+            monthISO={presenceMonth}
+            setMonthISO={setPresenceMonth}
+            onEditDay={(childId, dateISO) => setDayEditor({ childId, dateISO })}
           />
         ) : (
-          <Presence
+          <ChildrenList
             children={children}
-            presenceMonth={presenceMonth}
-            setPresenceMonth={setPresenceMonth}
-            presenceChildId={presenceChildId || (children[0] && children[0].id)}
-            setPresenceChildId={setPresenceChildId}
-            monthlyPresence={monthlyPresence}
-            computeMonthlyPaie={computeMonthlyPaie}
-            onExport={(payload) => setPrintMode(payload)}
-            onOpenBaremes={() => setShowBaremes(true)}
+            onOpen={(id) => { setRapportChildId(id); setView("rapport"); }}
+            onAdd={openNewChild}
+            reportMode
           />
         )}
       </main>
 
-      {view !== "detail" && (
+      {view === "list" && (
         <BottomNav tab={tab} setTab={setTab} />
       )}
 
@@ -410,6 +489,18 @@ export default function App() {
           baremes={baremes}
           onSave={(next) => { saveBaremes(next); setShowBaremes(false); }}
           onCancel={() => setShowBaremes(false)}
+          sheetsWebhook={sheetsWebhook}
+          onSaveWebhook={(url) => saveSheetsWebhook(url)}
+        />
+      )}
+
+      {dayEditor && (
+        <DayEditorModal
+          child={children.find(c => c.id === dayEditor.childId)}
+          dateISO={dayEditor.dateISO}
+          rec={(timesheet[dayEditor.childId] || {})[dayEditor.dateISO]}
+          onSave={(patch) => { updateTimesheetDay(dayEditor.childId, dayEditor.dateISO, patch); setDayEditor(null); }}
+          onCancel={() => setDayEditor(null)}
         />
       )}
     </div>
@@ -451,10 +542,10 @@ function Header({ title, onBack, storageOk, onOpenBackup }) {
 
 function BottomNav({ tab, setTab }) {
   const items = [
+    { key: "accueil", label: "Accueil", icon: Home },
     { key: "enfants", label: "Enfants", icon: Users },
-    { key: "planning", label: "Planning", icon: Calendar },
-    { key: "menus", label: "Menus", icon: UtensilsCrossed },
-    { key: "presences", label: "Présences", icon: Clock },
+    { key: "calendrier", label: "Calendrier", icon: Calendar },
+    { key: "rapports", label: "Rapports", icon: Receipt },
   ];
   return (
     <nav style={s.bottomNav}>
@@ -472,9 +563,87 @@ function BottomNav({ tab, setTab }) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Dashboard — tableau de bord (page d'accueil)                         */
+/* ------------------------------------------------------------------ */
+function Dashboard({ children, timesheet, onUpdateDay, dayMinutes, onOpenChild, onAdd }) {
+  const today = todayISO();
+  const now = new Date();
+  const nowHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  const greeting = now.getHours() < 12 ? "Bonjour" : now.getHours() < 18 ? "Bon après-midi" : "Bonsoir";
+
+  if (children.length === 0) {
+    return (
+      <div style={{ padding: 16 }}>
+        <div style={s.emptyState}>
+          <div style={{ fontSize: 34, marginBottom: 8 }}>🪺</div>
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 17, color: colors.ink, marginBottom: 4 }}>Bienvenue dans Nid</div>
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft, marginBottom: 16 }}>
+            Ajoutez un premier enfant pour commencer à pointer ses journées.
+          </div>
+          <button onClick={onAdd} style={s.primaryBtn}><Plus size={16} /> Ajouter un enfant</button>
+        </div>
+      </div>
+    );
+  }
+
+  let presentCount = 0;
+  children.forEach(c => {
+    const rec = (timesheet[c.id] || {})[today] || {};
+    if (rec.ma && !rec.md) presentCount++;
+  });
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 18, color: colors.ink, marginBottom: 2 }}>{greeting} 👋</div>
+      <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.inkSoft, marginBottom: 16, textTransform: "capitalize" }}>{fmtDateLong(today)}</div>
+
+      {presentCount > 0 && (
+        <div style={{ ...s.badgeGreen, display: "inline-block", marginBottom: 14 }}>{presentCount} enfant{presentCount > 1 ? "s" : ""} présent{presentCount > 1 ? "s" : ""} actuellement</div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {children.map(c => {
+          const rec = (timesheet[c.id] || {})[today] || {};
+          let label, action, done = false;
+          if (rec.absence) { label = "Absent aujourd'hui"; action = null; done = true; }
+          else if (!rec.ma) { label = "Arrivée"; action = () => onUpdateDay(c.id, today, { ma: nowHHMM }); }
+          else if (!rec.md) { label = "Départ"; action = () => onUpdateDay(c.id, today, { md: nowHHMM }); }
+          else { label = "Journée pointée"; action = null; done = true; }
+          const mins = dayMinutes(rec);
+
+          return (
+            <div key={c.id} style={s.dashCard}>
+              <button onClick={() => onOpenChild(c.id)} style={{ display: "flex", alignItems: "center", gap: 12, background: "none", border: "none", padding: 0, cursor: "pointer", flex: 1, textAlign: "left" }}>
+                <div style={{ ...s.avatar, background: c.color, width: 40, height: 40, fontSize: 16 }}>{c.firstName ? c.firstName[0].toUpperCase() : "?"}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink }}>{c.firstName}</div>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: colors.inkSoft }}>
+                    {rec.ma ? `${rec.ma}${rec.md ? " → " + rec.md : " → …"}` : "Pas encore pointé"}
+                    {mins > 0 && ` · ${fmtHeuresDec(mins / 60)}h`}
+                  </div>
+                </div>
+              </button>
+              <button
+                onClick={action || undefined}
+                disabled={!action}
+                style={{ ...s.dashPointageBtn, ...(done ? { background: colors.bg, color: colors.inkSoft } : { background: colors.coral, color: "#fff" }) }}
+              >
+                {label}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <button onClick={onAdd} style={{ ...s.smallGhostBtn, marginTop: 16 }}><Plus size={14} /> Ajouter un enfant</button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Children list                                                        */
 /* ------------------------------------------------------------------ */
-function ChildrenList({ children, onOpen, onAdd }) {
+function ChildrenList({ children, onOpen, onAdd, reportMode }) {
   return (
     <div style={{ padding: 16 }}>
       {children.length === 0 && (
@@ -499,15 +668,15 @@ function ChildrenList({ children, onOpen, onAdd }) {
                 {c.firstName} {c.lastName}
               </div>
               <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.inkSoft }}>
-                {c.gender === "F" ? "Fille" : "Garçon"} · {fmtAge(c.birthDate)}
+                {reportMode ? "Voir la facture du mois" : `${c.gender === "F" ? "Fille" : "Garçon"} · ${fmtAge(c.birthDate)}`}
               </div>
             </div>
-            <ChevronRight size={18} color={colors.inkSoft} />
+            {reportMode ? <Receipt size={17} color={colors.inkSoft} /> : <ChevronRight size={18} color={colors.inkSoft} />}
           </button>
         ))}
       </div>
 
-      {children.length > 0 && (
+      {children.length > 0 && !reportMode && (
         <button onClick={onAdd} style={{ ...s.primaryBtn, marginTop: 16, width: "100%", justifyContent: "center" }}>
           <Plus size={16} /> Ajouter un enfant
         </button>
@@ -519,74 +688,154 @@ function ChildrenList({ children, onOpen, onAdd }) {
 /* ------------------------------------------------------------------ */
 /* Child detail (dashboard + timeline)                                  */
 /* ------------------------------------------------------------------ */
-function ChildDetail({ child, childSubTab, setChildSubTab, journalDate, setJournalDate, eventsForDate, onLog, onDeleteEvent, onEdit, onExportDay }) {
+function ChildDetail({ child, childSubTab, setChildSubTab, journalDate, setJournalDate, eventsForDate, onLog, onDeleteEvent, onEdit, onExportDay, timesheet, onUpdateDay, dayMinutes, onEditDay }) {
   const dayEvents = eventsForDate(child.id, journalDate).slice().sort((a, b) => new Date(a.ts) - new Date(b.ts));
+  const childSheet = timesheet[child.id] || {};
+  const today = todayISO();
+  const todayRec = childSheet[today] || {};
+  const now = new Date();
+  const nowHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+
+  let pointageLabel, pointageAction, pointageDone = false;
+  if (!todayRec.ma) {
+    pointageLabel = `Arrivée de ${child.firstName}`;
+    pointageAction = () => onUpdateDay(child.id, today, { ma: nowHHMM });
+  } else if (!todayRec.md) {
+    pointageLabel = `Départ de ${child.firstName}`;
+    pointageAction = () => onUpdateDay(child.id, today, { md: nowHHMM });
+  } else {
+    pointageLabel = "Journée pointée";
+    pointageAction = () => onEditDay(today);
+    pointageDone = true;
+  }
+
+  const weekStartD = startOfWeek(new Date());
+  const weekDays = [0, 1, 2, 3, 4, 5, 6].map(i => toISODate(addDays(weekStartD, i)));
+  let weekTotalMins = 0;
+  weekDays.forEach(d => { weekTotalMins += dayMinutes(childSheet[d]); });
 
   return (
-    <div>
-      <div style={{ padding: "14px 16px 0" }}>
-        <div style={s.subTabRow}>
-          {[["events", "Aujourd'hui"], ["timeline", "Journal"]].map(([key, label]) => (
-            <button key={key} onClick={() => setChildSubTab(key)} style={{ ...s.subTab, ...(childSubTab === key ? s.subTabActive : {}) }}>
-              {label}
-            </button>
-          ))}
-          <button onClick={onEdit} style={s.iconBtnLight} aria-label="Modifier la fiche">
-            <Pencil size={15} color={colors.forest} />
-          </button>
+    <div style={{ padding: "14px 16px 90px" }}>
+      <div style={s.contractCard}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ ...s.avatar, background: child.color, position: "relative" }}>
+            {child.firstName ? child.firstName[0].toUpperCase() : "?"}
+            <button onClick={onEdit} style={s.editBadge} aria-label="Modifier"><Pencil size={11} color="#fff" /></button>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 17, color: colors.ink }}>
+              {child.firstName} <span style={{ fontSize: 13, color: colors.inkSoft, fontFamily: "Inter, sans-serif" }}>{fmtAge(child.birthDate)}</span>
+            </div>
+            {(child.parents || []).map((p, i) => (
+              p.name || p.phone ? <div key={i} style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: colors.inkSoft }}>{p.name} {p.phone && `· ${p.phone}`}</div> : null
+            ))}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+          {child.baseHeuresMois > 0 && (
+            <span style={s.badgeGreen}>Mensualisation · {fmtEuro((child.tauxHoraire || 0) * child.baseHeuresMois)}/mois</span>
+          )}
+          {(child.schedule?.days || []).length > 0 && (
+            <span style={s.badgeSoft}>{(child.schedule.days).map(i => DAY_LABELS_FULL[i].slice(0, 3)).join(", ")}</span>
+          )}
+          {child.schedule?.start && <span style={s.badgeSoft}>{child.schedule.start} → {child.schedule.end}</span>}
+          {child.tauxHoraire > 0 && <span style={s.badgeSoft}>{fmtEuro(child.tauxHoraire)}/h</span>}
         </div>
       </div>
 
-      {childSubTab === "events" ? (
-        <div style={{ padding: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {EVENT_TYPES.map(et => (
-            <button key={et.key} onClick={() => onLog(et.key)} style={{ ...s.eventBtn, background: et.color }}>
-              <et.icon size={22} color="#fff" />
-              <span style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13.5, color: "#fff" }}>{et.label}</span>
-            </button>
-          ))}
+      <button onClick={pointageAction} disabled={pointageDone} style={{ ...s.pointageBtn, ...(pointageDone ? s.pointageBtnDone : {}) }}>
+        {pointageDone ? <Check size={18} /> : <LogIn size={18} />} {pointageLabel} {!pointageDone && "→"}
+      </button>
+
+      <div style={s.weekCard}>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13.5, color: colors.forestDeep, marginBottom: 10 }}>Cette semaine</div>
+        {weekDays.map(d => {
+          const rec = childSheet[d] || {};
+          const mins = dayMinutes(rec);
+          const isFuture = d > today;
+          const dObj = new Date(d + "T00:00:00");
+          return (
+            <div key={d} style={s.weekRow} onClick={() => onEditDay(d)}>
+              <div style={{ width: 70, fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.ink }}>
+                <span style={{ textTransform: "capitalize" }}>{DAY_LABELS_FULL[isoDayIndex(dObj)].slice(0, 3)}</span> {dObj.getDate()}
+              </div>
+              <div style={{ flex: 1, fontFamily: "Inter, sans-serif", fontSize: 12.5, color: rec.ma ? colors.ink : colors.inkSoft }}>
+                {rec.absence ? rec.absence : rec.ma ? `${rec.ma} → ${rec.md || "…"}` : isFuture ? "—" : "Non pointé"}
+              </div>
+              <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 12.5, color: colors.forest }}>{mins > 0 ? fmtHeuresDec(mins / 60) + " h" : ""}</div>
+              <MoreVertical size={14} color={colors.inkSoft} style={{ marginLeft: 8 }} />
+            </div>
+          );
+        })}
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, paddingTop: 10, borderTop: `1px solid ${colors.line}` }}>
+          <span style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.inkSoft }}>Total semaine</span>
+          <strong style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: colors.ink }}>{fmtHeuresDec(weekTotalMins / 60)} h</strong>
         </div>
-      ) : (
-        <div style={{ padding: 16 }}>
-          <DateStepper dateISO={journalDate} onChange={setJournalDate} />
-          <button onClick={() => onExportDay(dayEvents)} style={{ ...s.smallGhostBtn, marginTop: 10 }}>
-            <Printer size={14} /> Exporter cette journée en PDF
+      </div>
+
+      <button onClick={() => onEditDay(today)} style={{ ...s.secondaryBtn, width: "100%", marginTop: 12, color: colors.danger, borderColor: "#F3D9D4" }}>
+        Signaler une absence
+      </button>
+
+      <div style={{ marginTop: 22 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13.5, color: colors.forestDeep, flex: 1 }}>Notes pour les parents</div>
+          <button onClick={() => setChildSubTab(childSubTab === "timeline" ? "events" : "timeline")} style={s.smallGhostBtn}>
+            {childSubTab === "timeline" ? "Ajouter une note" : "Voir le journal"}
           </button>
-          <div style={{ marginTop: 14 }}>
-            {dayEvents.length === 0 ? (
-              <div style={{ ...s.emptyState, padding: "28px 16px" }}>
-                <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft }}>Aucun évènement ce jour-là.</div>
-              </div>
-            ) : (
-              <div style={{ position: "relative", paddingLeft: 22 }}>
-                <div style={s.timelineRail} />
-                {dayEvents.map(ev => {
-                  const meta = EVENT_MAP[ev.type];
-                  return (
-                    <div key={ev.id} style={{ position: "relative", marginBottom: 14 }}>
-                      <div style={{ ...s.timelineDot, background: meta.color }}>
-                        <meta.icon size={12} color="#fff" />
-                      </div>
-                      <div style={s.timelineCard}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                          <div>
-                            <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14.5, color: colors.ink }}>{meta.label}</div>
-                            <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: colors.inkSoft }}>{fmtTime(ev.ts)}</div>
-                          </div>
-                          <button onClick={() => onDeleteEvent(ev.id)} style={s.trashBtn} aria-label="Supprimer">
-                            <Trash2 size={14} color={colors.inkSoft} />
-                          </button>
-                        </div>
-                        {ev.note && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.ink, marginTop: 6 }}>{ev.note}</div>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
         </div>
-      )}
+
+        {childSubTab === "events" ? (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+            {EVENT_TYPES.map(et => (
+              <button key={et.key} onClick={() => onLog(et.key)} style={{ ...s.eventBtn, background: et.color }}>
+                <et.icon size={19} color="#fff" />
+                <span style={{ fontFamily: "Fredoka, sans-serif", fontSize: 11.5, color: "#fff" }}>{et.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div>
+            <DateStepper dateISO={journalDate} onChange={setJournalDate} />
+            <button onClick={() => onExportDay(dayEvents)} style={{ ...s.smallGhostBtn, marginTop: 10 }}>
+              <Printer size={14} /> Exporter cette journée en PDF
+            </button>
+            <div style={{ marginTop: 14 }}>
+              {dayEvents.length === 0 ? (
+                <div style={{ ...s.emptyState, padding: "28px 16px" }}>
+                  <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft }}>Aucune note ce jour-là.</div>
+                </div>
+              ) : (
+                <div style={{ position: "relative", paddingLeft: 22 }}>
+                  <div style={s.timelineRail} />
+                  {dayEvents.map(ev => {
+                    const meta = EVENT_MAP[ev.type] || { label: ev.type, icon: Camera, color: colors.inkSoft };
+                    return (
+                      <div key={ev.id} style={{ position: "relative", marginBottom: 14 }}>
+                        <div style={{ ...s.timelineDot, background: meta.color }}>
+                          <meta.icon size={12} color="#fff" />
+                        </div>
+                        <div style={s.timelineCard}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                            <div>
+                              <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14.5, color: colors.ink }}>{meta.label}</div>
+                              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: colors.inkSoft }}>{fmtTime(ev.ts)}</div>
+                            </div>
+                            <button onClick={() => onDeleteEvent(ev.id)} style={s.trashBtn} aria-label="Supprimer">
+                              <Trash2 size={14} color={colors.inkSoft} />
+                            </button>
+                          </div>
+                          {ev.note && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.ink, marginTop: 6 }}>{ev.note}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -790,15 +1039,72 @@ function ChildForm({ initial, onCancel, onSave, onDelete }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Barèmes de paie (réglages globaux)                                   */
+/* Day editor — quick edit for one day (used by Calendrier & ChildDetail) */
 /* ------------------------------------------------------------------ */
-function BaremesModal({ baremes, onSave, onCancel }) {
+function DayEditorModal({ child, dateISO, rec, onSave, onCancel }) {
+  const r = rec || {};
+  const [ma, setMa] = useState(r.ma || "");
+  const [md, setMd] = useState(r.md || "");
+  const [aa, setAa] = useState(r.aa || "");
+  const [ad, setAd] = useState(r.ad || "");
+  const [repas, setRepas] = useState(!!r.repas);
+  const [petitDejeuner, setPetitDejeuner] = useState(!!r.petitDejeuner);
+  const [gouter, setGouter] = useState(!!r.gouter);
+  const [absence, setAbsence] = useState(r.absence || "");
+
+  function submit() {
+    onSave({ ma, md, aa, ad, repas, petitDejeuner, gouter, absence: absence.trim() });
+  }
+
+  if (!child) return null;
+
+  return (
+    <Overlay onClose={onCancel}>
+      <div style={{ ...s.sheet, maxWidth: 400 }}>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 17, color: colors.ink, marginBottom: 2 }}>{child.firstName}</div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.inkSoft, marginBottom: 14, textTransform: "capitalize" }}>{fmtDateLong(dateISO)}</div>
+
+        <Field label="Matin">
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="time" value={ma} onChange={e => setMa(e.target.value)} style={s.input} />
+            <span style={{ color: colors.inkSoft }}>→</span>
+            <input type="time" value={md} onChange={e => setMd(e.target.value)} style={s.input} />
+          </div>
+        </Field>
+        <Field label="Après-midi (si coupure)">
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="time" value={aa} onChange={e => setAa(e.target.value)} style={s.input} />
+            <span style={{ color: colors.inkSoft }}>→</span>
+            <input type="time" value={ad} onChange={e => setAd(e.target.value)} style={s.input} />
+          </div>
+        </Field>
+        <Field label="Repas fournis">
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setPetitDejeuner(v => !v)} style={{ ...s.toggleBtn, ...(petitDejeuner ? { background: colors.forest, color: "#fff", borderColor: colors.forest } : {}) }}>Petit-déj</button>
+            <button onClick={() => setRepas(v => !v)} style={{ ...s.toggleBtn, ...(repas ? { background: colors.forest, color: "#fff", borderColor: colors.forest } : {}) }}>Repas</button>
+            <button onClick={() => setGouter(v => !v)} style={{ ...s.toggleBtn, ...(gouter ? { background: colors.forest, color: "#fff", borderColor: colors.forest } : {}) }}>Goûter</button>
+          </div>
+        </Field>
+        <Field label="Absence (facultatif)">
+          <input type="text" value={absence} onChange={e => setAbsence(e.target.value)} placeholder="Ex : Enfant malade, congé, férié…" style={s.input} />
+        </Field>
+
+        <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
+          <button onClick={onCancel} style={s.secondaryBtn}>Annuler</button>
+          <button onClick={submit} style={{ ...s.primaryBtn, flex: 1, justifyContent: "center" }}><Check size={16} /> Enregistrer</button>
+        </div>
+      </div>
+    </Overlay>
+  );
+}
+function BaremesModal({ baremes, onSave, onCancel, sheetsWebhook, onSaveWebhook }) {
   const [entretien, setEntretien] = useState(baremes.entretien.map(b => ({ ...b })));
   const [repas, setRepas] = useState(baremes.repas);
   const [petitDejeuner, setPetitDejeuner] = useState(baremes.petitDejeuner);
   const [gouter, setGouter] = useState(baremes.gouter);
   const [congesPayesPercent, setCongesPayesPercent] = useState(baremes.congesPayesPercent);
   const [majorationHeuresSup, setMajorationHeuresSup] = useState(baremes.majorationHeuresSup);
+  const [webhook, setWebhook] = useState(sheetsWebhook || "");
 
   const bracketLabels = ["Moins de 8h", "8h - 9h", "9h - 10h", "10h - 11h", "Plus de 11h"];
 
@@ -815,6 +1121,7 @@ function BaremesModal({ baremes, onSave, onCancel }) {
       congesPayesPercent: parseFloat(congesPayesPercent) || 0,
       majorationHeuresSup: parseFloat(majorationHeuresSup) || 0,
     });
+    onSaveWebhook(webhook.trim());
   }
 
   return (
@@ -849,11 +1156,411 @@ function BaremesModal({ baremes, onSave, onCancel }) {
           <div style={{ flex: 1 }}><Field label="Majoration heures sup. (%)"><input type="number" step="1" min="0" value={majorationHeuresSup} onChange={e => setMajorationHeuresSup(e.target.value)} style={s.input} /></Field></div>
         </div>
 
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: colors.forestDeep, margin: "18px 0 8px" }}>Google Sheets</div>
+        <Field label="URL de l'application Google Apps Script">
+          <input type="text" value={webhook} onChange={e => setWebhook(e.target.value)} style={s.input} placeholder="https://script.google.com/macros/s/.../exec" />
+        </Field>
+
         <button onClick={submit} style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 14 }}>
           <Check size={16} /> Enregistrer les réglages
         </button>
       </div>
     </Overlay>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Saisie — grille façon tableur (heures, repas, absences)              */
+/* ------------------------------------------------------------------ */
+function SaisieGrid({ children, timesheet, onUpdateDay, dayMinutes, baremes, sheetsWebhook, sheetsStatus, onPushSheets, onOpenSettings }) {
+  const [childId, setChildId] = useState(children[0]?.id || null);
+  const [monthISO, setMonthISO] = useState(new Date().toISOString().slice(0, 7));
+
+  const child = children.find(c => c.id === childId);
+
+  const shiftMonth = (n) => {
+    const [y, m] = monthISO.split("-").map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    setMonthISO(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const monthLabel = () => {
+    const [y, m] = monthISO.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  };
+
+  if (children.length === 0) {
+    return <div style={{ padding: 16 }}><div style={s.emptyState}><div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft }}>Ajoutez un enfant pour saisir ses heures.</div></div></div>;
+  }
+
+  const childSheet = timesheet[child.id] || {};
+  const days = daysInMonth(monthISO);
+  let totalMins = 0;
+  days.forEach(d => { totalMins += dayMinutes(childSheet[d]); });
+
+  function entretienRate(mins) {
+    if (mins <= 0) return 0;
+    const hours = mins / 60;
+    const sorted = [...baremes.entretien].sort((a, b) => a.max - b.max);
+    const bracket = sorted.find(b => hours <= b.max) || sorted[sorted.length - 1];
+    return bracket.rate;
+  }
+
+  return (
+    <div style={{ padding: "16px 12px" }}>
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 10, marginBottom: 4 }}>
+        {children.map(c => (
+          <button key={c.id} onClick={() => setChildId(c.id)} style={{ ...s.childChip, ...(c.id === childId ? { background: c.color, borderColor: c.color } : {}) }}>
+            <span style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13, color: c.id === childId ? "#fff" : colors.ink }}>{c.firstName}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "10px 0 12px" }}>
+        <button onClick={() => shiftMonth(-1)} style={s.iconBtnLight}><ChevronLeft size={16} color={colors.forest} /></button>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 15, color: colors.ink, textTransform: "capitalize" }}>{monthLabel()}</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => shiftMonth(1)} style={s.iconBtnLight}><ChevronRight size={16} color={colors.forest} /></button>
+          <button onClick={onOpenSettings} style={s.iconBtnLight} aria-label="Réglages de paie"><Settings size={16} color={colors.forest} /></button>
+        </div>
+      </div>
+
+      <div style={{ overflowX: "auto", border: `1px solid ${colors.line}`, borderRadius: 12, background: colors.card }}>
+        <table style={s.gridTable}>
+          <thead>
+            <tr>
+              <th style={s.gridTh}>Jour</th>
+              <th style={s.gridTh} colSpan={2}>Matin</th>
+              <th style={s.gridTh} colSpan={2}>Après-midi</th>
+              <th style={s.gridTh}>Total</th>
+              <th style={s.gridTh}>Entr.</th>
+              <th style={s.gridTh}>🍼</th>
+              <th style={s.gridTh}>🍽</th>
+              <th style={s.gridTh}>🍪</th>
+              <th style={s.gridTh}>Absence</th>
+            </tr>
+            <tr>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}>Arr.</th>
+              <th style={s.gridThSub}>Dép.</th>
+              <th style={s.gridThSub}>Arr.</th>
+              <th style={s.gridThSub}>Dép.</th>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}></th>
+              <th style={s.gridThSub}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {days.map(day => {
+              const rec = childSheet[day] || {};
+              const mins = dayMinutes(rec);
+              const d = new Date(day + "T00:00:00");
+              const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+              return (
+                <tr key={day} style={isWeekend ? { background: colors.bg } : undefined}>
+                  <td style={s.gridTdLabel}>
+                    <div style={{ fontFamily: "Fredoka, sans-serif" }}>{d.getDate()}</div>
+                    <div style={{ fontSize: 9.5, color: colors.inkSoft }}>{DAY_LABELS_FULL[isoDayIndex(d)].slice(0, 3)}</div>
+                  </td>
+                  <td style={s.gridTd}><input type="time" value={rec.ma || ""} onChange={e => onUpdateDay(child.id, day, { ma: e.target.value })} style={s.gridInput} /></td>
+                  <td style={s.gridTd}><input type="time" value={rec.md || ""} onChange={e => onUpdateDay(child.id, day, { md: e.target.value })} style={s.gridInput} /></td>
+                  <td style={s.gridTd}><input type="time" value={rec.aa || ""} onChange={e => onUpdateDay(child.id, day, { aa: e.target.value })} style={s.gridInput} /></td>
+                  <td style={s.gridTd}><input type="time" value={rec.ad || ""} onChange={e => onUpdateDay(child.id, day, { ad: e.target.value })} style={s.gridInput} /></td>
+                  <td style={{ ...s.gridTd, fontFamily: "Fredoka, sans-serif", fontSize: 12 }}>{mins > 0 ? fmtHeuresDec(mins / 60) : ""}</td>
+                  <td style={{ ...s.gridTd, fontSize: 11, color: colors.inkSoft }}>{mins > 0 ? fmtEuro(entretienRate(mins)) : ""}</td>
+                  <td style={s.gridTd}><input type="checkbox" checked={!!rec.petitDejeuner} onChange={e => onUpdateDay(child.id, day, { petitDejeuner: e.target.checked })} /></td>
+                  <td style={s.gridTd}><input type="checkbox" checked={!!rec.repas} onChange={e => onUpdateDay(child.id, day, { repas: e.target.checked })} /></td>
+                  <td style={s.gridTd}><input type="checkbox" checked={!!rec.gouter} onChange={e => onUpdateDay(child.id, day, { gouter: e.target.checked })} /></td>
+                  <td style={s.gridTd}><input type="text" value={rec.absence || ""} onChange={e => onUpdateDay(child.id, day, { absence: e.target.value })} placeholder="—" style={{ ...s.gridInput, width: 60 }} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.ink }}>
+        <span>Total du mois</span>
+        <strong style={{ fontFamily: "Fredoka, sans-serif", color: colors.forest }}>{fmtHeuresDec(totalMins / 60)} h</strong>
+      </div>
+
+      {sheetsWebhook ? (
+        <button onClick={() => onPushSheets(child, monthISO)} style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 14 }}>
+          {sheetsStatus === "sending" ? "Envoi en cours…" : <><Send size={16} /> Envoyer vers Google Sheets</>}
+        </button>
+      ) : (
+        <button onClick={onOpenSettings} style={{ ...s.secondaryBtn, width: "100%", marginTop: 14 }}>
+          Configurer l'envoi vers Google Sheets
+        </button>
+      )}
+      {sheetsStatus === "ok" && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: colors.forest, marginTop: 8, textAlign: "center" }}>Envoyé — vérifiez votre feuille Google Sheets.</div>}
+      {sheetsStatus === "error" && <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: colors.danger, marginTop: 8, textAlign: "center" }}>Échec de l'envoi. Vérifiez l'URL dans les réglages.</div>}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Calendrier — vue mensuelle colorée                                    */
+/* ------------------------------------------------------------------ */
+function CalendarView({ children, timesheet, dayMinutes, monthISO, setMonthISO, onEditDay }) {
+  const [filterId, setFilterId] = useState("tous");
+
+  const shiftMonth = (n) => {
+    const [y, m] = monthISO.split("-").map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    setMonthISO(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const monthLabel = () => {
+    const [y, m] = monthISO.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  };
+
+  if (children.length === 0) {
+    return <div style={{ padding: 16 }}><div style={s.emptyState}><div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft }}>Ajoutez un enfant pour voir le calendrier.</div></div></div>;
+  }
+
+  const days = daysInMonth(monthISO);
+  const leading = isoDayIndex(new Date(days[0] + "T00:00:00"));
+  const today = todayISO();
+
+  function dayInfo(dateISO) {
+    if (filterId === "tous") {
+      let total = 0;
+      children.forEach(c => { total += dayMinutes((timesheet[c.id] || {})[dateISO]); });
+      return { status: total > 0 ? "travaille" : "none", mins: total };
+    }
+    const child = children.find(c => c.id === filterId);
+    if (!child) return { status: "none", mins: 0 };
+    const rec = (timesheet[child.id] || {})[dateISO] || {};
+    const mins = dayMinutes(rec);
+    if (rec.absence) {
+      const isFerie = /féri/i.test(rec.absence);
+      return { status: isFerie ? "ferie" : "absence", mins };
+    }
+    if (mins > 0) return { status: "travaille", mins };
+    const dow = isoDayIndex(new Date(dateISO + "T00:00:00"));
+    const scheduled = (child.schedule?.days || []).includes(dow);
+    if (!scheduled) return { status: "none", mins: 0 };
+    return { status: dateISO <= today ? "manquant" : "prevu", mins: 0 };
+  }
+
+  const statusStyle = {
+    travaille: { background: "#DCEBE3", color: colors.forestDeep },
+    absence: { background: colors.blush, color: colors.danger },
+    ferie: { background: "#F7E9C4", color: "#8A6B1E" },
+    manquant: { background: "#fff", color: colors.danger, border: `1.5px solid ${colors.danger}` },
+    prevu: { background: "#E7F0F5", color: colors.navy },
+    none: { background: "transparent", color: colors.inkSoft },
+  };
+
+  let sumMins = 0, joursTravailles = 0, joursPrevus = 0, joursAbsence = 0;
+  days.forEach(d => {
+    const info = dayInfo(d);
+    if (info.status === "travaille") { sumMins += info.mins; joursTravailles++; joursPrevus++; }
+    if (info.status === "manquant" || info.status === "prevu") joursPrevus++;
+    if (info.status === "absence" || info.status === "ferie") joursAbsence++;
+  });
+  const selectedChild = children.find(c => c.id === filterId);
+  const heuresComp = selectedChild && selectedChild.baseHeuresMois > 0 ? Math.max(0, sumMins / 60 - selectedChild.baseHeuresMois) : 0;
+
+  return (
+    <div style={{ padding: 16 }}>
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 10 }}>
+        <button onClick={() => setFilterId("tous")} style={{ ...s.childChip, ...(filterId === "tous" ? { background: colors.forest, borderColor: colors.forest } : {}) }}>
+          <span style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13, color: filterId === "tous" ? "#fff" : colors.ink }}>Tous</span>
+        </button>
+        {children.map(c => (
+          <button key={c.id} onClick={() => setFilterId(c.id)} style={{ ...s.childChip, ...(filterId === c.id ? { background: c.color, borderColor: c.color } : {}) }}>
+            <span style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13, color: filterId === c.id ? "#fff" : colors.ink }}>{c.firstName}</span>
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "10px 0 12px" }}>
+        <button onClick={() => shiftMonth(-1)} style={s.iconBtnLight}><ChevronLeft size={16} color={colors.forest} /></button>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 16, color: colors.ink, textTransform: "capitalize" }}>{monthLabel()}</div>
+        <button onClick={() => shiftMonth(1)} style={s.iconBtnLight}><ChevronRight size={16} color={colors.forest} /></button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 6 }}>
+        {DAY_LABELS_FULL.map(d => <div key={d} style={{ textAlign: "center", fontFamily: "Inter, sans-serif", fontSize: 10.5, color: colors.inkSoft }}>{d[0]}</div>)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+        {Array.from({ length: leading }).map((_, i) => <div key={"b" + i} />)}
+        {days.map(d => {
+          const info = dayInfo(d);
+          const dNum = Number(d.slice(8, 10));
+          const clickable = filterId !== "tous";
+          return (
+            <button
+              key={d}
+              onClick={() => clickable && onEditDay(filterId, d)}
+              style={{ ...s.calDay, ...statusStyle[info.status], cursor: clickable ? "pointer" : "default" }}
+            >
+              <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13 }}>{dNum}</div>
+              {info.status === "travaille" && <div style={{ fontSize: 9.5 }}>{fmtHeuresDec(info.mins / 60)}h</div>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={s.legendRow}>
+        {[["travaille", "Travaillé"], ["absence", "Absence"], ["manquant", "Manquant"], ["ferie", "Férié"], ["prevu", "Prévu"]].map(([k, l]) => (
+          <div key={k} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 3, background: statusStyle[k].background, border: statusStyle[k].border || "none" }} />
+            <span style={{ fontFamily: "Inter, sans-serif", fontSize: 10.5, color: colors.inkSoft }}>{l}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={s.calSummary}>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "rgba(255,255,255,0.75)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+          Récap {monthLabel()}
+        </div>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 22, color: "#fff", margin: "4px 0 8px" }}>{fmtHeuresDec(sumMins / 60)} h total</div>
+        {selectedChild ? (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 14, color: "#fff" }}>{selectedChild.firstName}</div>
+              <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: "rgba(255,255,255,0.75)" }}>{joursTravailles}j trav / {joursPrevus}j prévus · {joursAbsence}j abs</div>
+            </div>
+            {heuresComp > 0 && <span style={s.badgeOnDark}>+{fmtHeuresDec(heuresComp)}h comp</span>}
+          </div>
+        ) : (
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11.5, color: "rgba(255,255,255,0.75)" }}>Sélectionnez un enfant pour le détail et modifier un jour.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Facture — récapitulatif mensuel + récap Pajemploi                    */
+/* ------------------------------------------------------------------ */
+function Facture({ child, monthISO, setMonthISO, timesheet, dayMinutes, baremes, computeMonthlyPaie, onExport, onOpenBaremes }) {
+  const shiftMonth = (n) => {
+    const [y, m] = monthISO.split("-").map(Number);
+    const d = new Date(y, m - 1 + n, 1);
+    setMonthISO(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const monthLabel = () => {
+    const [y, m] = monthISO.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  };
+
+  if (!child) return <div style={{ padding: 16 }}><div style={s.emptyState}><div style={{ fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.inkSoft }}>Enfant introuvable.</div></div></div>;
+
+  const childSheet = timesheet[child.id] || {};
+  const days = daysInMonth(monthISO).filter(d => {
+    const rec = childSheet[d];
+    return rec && (dayMinutes(rec) > 0 || rec.absence);
+  });
+  const paie = computeMonthlyPaie(child, monthISO);
+  const joursMensualises = (() => {
+    let n = 0;
+    daysInMonth(monthISO).forEach(d => {
+      const dow = isoDayIndex(new Date(d + "T00:00:00"));
+      if ((child.schedule?.days || []).includes(dow)) n++;
+    });
+    return n;
+  })();
+
+  return (
+    <div style={{ padding: 16, paddingBottom: 40 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+        <button onClick={() => shiftMonth(-1)} style={s.iconBtnLight}><ChevronLeft size={16} color={colors.forest} /></button>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 16, color: colors.ink }}>Facture — {child.firstName}</div>
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 12, color: colors.inkSoft, textTransform: "capitalize" }}>{monthLabel()}</div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => shiftMonth(1)} style={s.iconBtnLight}><ChevronRight size={16} color={colors.forest} /></button>
+          <button onClick={onOpenBaremes} style={s.iconBtnLight}><Settings size={16} color={colors.forest} /></button>
+        </div>
+      </div>
+
+      <div style={s.factureCard}>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 12, color: colors.inkSoft, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>Détail du mois</div>
+        {days.length === 0 ? (
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 13, color: colors.inkSoft }}>Aucune donnée ce mois-ci.</div>
+        ) : days.map(d => {
+          const rec = childSheet[d];
+          const mins = dayMinutes(rec);
+          const dObj = new Date(d + "T00:00:00");
+          return (
+            <div key={d} style={s.factureDayRow}>
+              <div style={{ width: 56, fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.ink, textTransform: "capitalize" }}>
+                {DAY_LABELS_FULL[isoDayIndex(dObj)].slice(0, 3)} {dObj.getDate()}
+              </div>
+              {rec.absence ? (
+                <>
+                  <div style={{ flex: 1, fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.inkSoft }}>🤒 {rec.absence}</div>
+                  <span style={s.badgeMuted}>Non rém.</span>
+                </>
+              ) : (
+                <>
+                  <div style={{ flex: 1, fontFamily: "Inter, sans-serif", fontSize: 12.5, color: colors.ink }}>{rec.ma} → {rec.md}{rec.aa ? ` · ${rec.aa} → ${rec.ad}` : ""}</div>
+                  <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13, color: colors.forest }}>{fmtHeuresDec(mins / 60)}h</div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={s.factureCard}>
+        <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 12, color: colors.inkSoft, textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 10 }}>Récapitulatif</div>
+        <div style={s.paieRow}><span>Salaire de base</span><strong>{fmtEuro(paie.salaireBase)}</strong></div>
+        {paie.heuresSup > 0 && (
+          <div style={s.paieRow}><span>Heures complémentaires ({fmtHeuresDec(paie.heuresSup)}h)</span><strong>{fmtEuro(paie.remunerationHeuresSup)}</strong></div>
+        )}
+        <div style={s.paieRow}><span>Congés payés</span><strong>{fmtEuro(paie.congesPayes)}</strong></div>
+        <div style={s.paieDivider} />
+        <div style={s.paieRow}><span>Ind. entretien ({paie.daysWorked}j)</span><strong>{fmtEuro(paie.entretienTotal)}</strong></div>
+        <div style={s.paieRow}><span>Ind. repas ({paie.countRepas + paie.countPetitDej + paie.countGouter} repas)</span><strong>{fmtEuro(paie.indemniteRepas)}</strong></div>
+      </div>
+
+      <div style={s.factureTotalBanner}>
+        <div>
+          <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: "rgba(255,255,255,0.75)", textTransform: "uppercase" }}>Total dû</div>
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 26, color: "#fff" }}>{fmtEuro(paie.totalNet)}</div>
+        </div>
+        <div style={{ fontSize: 26 }}>💶</div>
+      </div>
+
+      <div style={{ ...s.factureCard, marginTop: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+          <ClipboardList size={15} color={colors.forest} />
+          <div style={{ fontFamily: "Fredoka, sans-serif", fontSize: 13, color: colors.ink }}>Récap Pajemploi — {child.firstName} — <span style={{ textTransform: "capitalize" }}>{monthLabel()}</span></div>
+        </div>
+        <div style={s.paieRow}><span>Période d'emploi</span><strong>{daysInMonth(monthISO)[0]?.split("-").reverse().join("/")} → {daysInMonth(monthISO).at(-1)?.split("-").reverse().join("/")}</strong></div>
+        <div style={s.paieRow}><span>Jours d'activité</span><strong>{paie.daysWorked}</strong></div>
+        <div style={s.paieRow}><span>Heures à déclarer</span><strong>{fmtHeuresDec(paie.totalHeures)} h</strong></div>
+        <div style={s.paieDivider} />
+        <div style={s.paieRow}><span>Heures normales ({fmtHeuresDec(paie.heuresBase)}h)</span><strong>{fmtEuro(paie.salaireBase)}</strong></div>
+        {paie.heuresSup > 0 && (
+          <div style={s.paieRow}><span>Heures majorées ({fmtHeuresDec(paie.heuresSup)}h)</span><strong>{fmtEuro(paie.remunerationHeuresSup)}</strong></div>
+        )}
+        <div style={s.paieDivider} />
+        <div style={s.paieRow}><span>Indemnités et frais</span><strong>{fmtEuro(paie.entretienTotal + paie.indemniteRepas)}</strong></div>
+        <div style={{ ...s.paieRow, marginTop: 4 }}>
+          <span style={{ fontFamily: "Fredoka, sans-serif", color: colors.ink }}>{joursMensualises} jours mensualisés à déclarer</span>
+          <strong style={{ fontFamily: "Fredoka, sans-serif", color: colors.forest }}>{fmtEuro(paie.totalNet)}</strong>
+        </div>
+        <div style={{ fontFamily: "Inter, sans-serif", fontSize: 11, color: colors.inkSoft, marginTop: 10, lineHeight: 1.5 }}>
+          Estimation à vérifier sur le site officiel Pajemploi avant déclaration — les règles de mensualisation et de cotisations peuvent varier selon votre situation.
+        </div>
+      </div>
+
+      <button
+        onClick={() => onExport({ type: "paie", child, monthLabel: monthLabel(), paie })}
+        style={{ ...s.primaryBtn, width: "100%", justifyContent: "center", marginTop: 14 }}
+      >
+        <Printer size={16} /> Exporter la facture en PDF
+      </button>
+    </div>
   );
 }
 
@@ -1213,7 +1920,7 @@ function PrintOverlay({ data, onClose }) {
                 ) : data.events.map(ev => (
                   <tr key={ev.id}>
                     <td style={s.td}>{fmtTime(ev.ts)}</td>
-                    <td style={s.td}>{EVENT_MAP[ev.type].label}</td>
+                    <td style={s.td}>{EVENT_MAP[ev.type]?.label || ev.type}</td>
                     <td style={s.td}>{ev.note || "—"}</td>
                   </tr>
                 ))}
@@ -1421,4 +2128,28 @@ const s = {
   paieCard: { background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 16, padding: 16 },
   paieRow: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", fontFamily: "Inter, sans-serif", fontSize: 13.5, color: colors.ink },
   paieDivider: { height: 1, background: colors.line, margin: "6px 0" },
+  gridTable: { borderCollapse: "collapse", fontFamily: "Inter, sans-serif", fontSize: 11, minWidth: 640 },
+  gridTh: { background: colors.forest, color: "#fff", padding: "6px 4px", fontWeight: 600, fontSize: 10.5, borderRight: "1px solid rgba(255,255,255,0.15)" },
+  gridThSub: { background: colors.forest, color: "rgba(255,255,255,0.75)", padding: "2px 4px", fontWeight: 500, fontSize: 9.5, borderRight: "1px solid rgba(255,255,255,0.15)" },
+  gridTd: { padding: "3px 4px", textAlign: "center", borderRight: `1px solid ${colors.line}`, borderBottom: `1px solid ${colors.line}` },
+  gridTdLabel: { padding: "3px 6px", textAlign: "center", borderRight: `1px solid ${colors.line}`, borderBottom: `1px solid ${colors.line}`, background: colors.bg, fontSize: 12, color: colors.ink },
+  gridInput: { width: 62, border: `1px solid ${colors.line}`, borderRadius: 6, fontSize: 11, padding: "2px 1px", textAlign: "center", background: "#fff" },
+  contractCard: { background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 16, padding: 14, marginBottom: 14 },
+  editBadge: { position: "absolute", bottom: -3, right: -3, width: 20, height: 20, borderRadius: "50%", background: colors.forest, border: "2px solid #fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
+  badgeGreen: { background: "#DCEBE3", color: colors.forestDeep, fontFamily: "Inter, sans-serif", fontSize: 11.5, fontWeight: 600, padding: "4px 10px", borderRadius: 999 },
+  badgeSoft: { background: colors.bg, color: colors.ink, fontFamily: "Inter, sans-serif", fontSize: 11.5, padding: "4px 10px", borderRadius: 999, border: `1px solid ${colors.line}` },
+  badgeMuted: { background: colors.blush, color: colors.danger, fontFamily: "Inter, sans-serif", fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999 },
+  badgeOnDark: { background: "rgba(255,255,255,0.2)", color: "#fff", fontFamily: "Inter, sans-serif", fontSize: 11.5, fontWeight: 600, padding: "4px 10px", borderRadius: 999 },
+  pointageBtn: { display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", background: colors.coral, color: "#fff", border: "none", borderRadius: 16, padding: "16px 0", fontFamily: "Fredoka, sans-serif", fontSize: 16, cursor: "pointer", marginBottom: 14 },
+  pointageBtnDone: { background: "#DCEBE3", color: colors.forestDeep, cursor: "default" },
+  weekCard: { background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 16, padding: 14 },
+  weekRow: { display: "flex", alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${colors.line}`, cursor: "pointer" },
+  calDay: { aspectRatio: "1", border: "none", borderRadius: 9, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 1, fontFamily: "Inter, sans-serif" },
+  legendRow: { display: "flex", flexWrap: "wrap", gap: 12, marginTop: 14, padding: "10px 12px", background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 12 },
+  calSummary: { background: colors.forestDeep, borderRadius: 16, padding: 16, marginTop: 14 },
+  factureCard: { background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 16, padding: 14, marginBottom: 12 },
+  factureDayRow: { display: "flex", alignItems: "center", padding: "7px 0", borderBottom: `1px solid ${colors.line}` },
+  factureTotalBanner: { display: "flex", alignItems: "center", justifyContent: "space-between", background: colors.forest, borderRadius: 16, padding: 16 },
+  dashCard: { display: "flex", alignItems: "center", gap: 10, background: colors.card, border: `1px solid ${colors.line}`, borderRadius: 14, padding: 12 },
+  dashPointageBtn: { border: "none", borderRadius: 10, padding: "9px 14px", fontFamily: "Fredoka, sans-serif", fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap" },
 };
